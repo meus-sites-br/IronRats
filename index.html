@@ -1,0 +1,903 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>IronRats - Evolução Contínua</title>
+    
+    <!-- Tailwind CSS (Estilos) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- FontAwesome (Ícones) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Configuração de Cores do Tailwind -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        gray: {
+                            900: '#111827',
+                            950: '#030712',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- CSS Customizado -->
+    <style>
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        .fade-in { animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .pulse-slow { animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        
+        /* Modal Overlay */
+        .modal-overlay { background-color: rgba(0, 0, 0, 0.85); backdrop-filter: blur(4px); }
+    </style>
+</head>
+<body class="bg-gray-950 text-slate-200 font-sans antialiased selection:bg-emerald-500 selection:text-white">
+
+    <!-- Container Principal do App -->
+    <div id="app" class="min-h-screen pb-20 md:pb-0"></div>
+
+    <!-- Lógica JavaScript -->
+    <script>
+        // --- DADOS INICIAIS ZERADOS COM IMAGENS INDIVIDUAIS ---
+        // Você pode trocar os links das imagens abaixo pelas imagens que quiser!
+        const DEFAULT_USERS = {
+            "allan": { 
+                username: "allan", password: "123", name: "Allan Lima", sugarStreak: 0, lastSugarCheckIn: "", workoutCheckIns: 0, 
+                motivationImage: "img/Allan.jpg",
+                workouts: { monday: [], tuesday: [], wednesday: [], thursday: [], friday: [], saturday: [], sunday: [] } 
+            },
+            "rebeka": { 
+                username: "rebeka", password: "123", name: "Rebeka Amaral", sugarStreak: 0, lastSugarCheckIn: "", workoutCheckIns: 0, 
+                motivationImage: "img/Rebeka.jpg",
+                workouts: { monday: [], tuesday: [], wednesday: [], thursday: [], friday: [], saturday: [], sunday: [] } 
+            },
+            "karol": { 
+                username: "karol", password: "123", name: "Karol Mirelli", sugarStreak: 0, lastSugarCheckIn: "", workoutCheckIns: 0, 
+                motivationImage: "img/Karol.jpg",
+                workouts: { monday: [], tuesday: [], wednesday: [], thursday: [], friday: [], saturday: [], sunday: [] } 
+            }
+        };
+
+        const DAYS_OF_WEEK = [
+            { id: 'monday', label: 'Segunda' },
+            { id: 'tuesday', label: 'Terça' },
+            { id: 'wednesday', label: 'Quarta' },
+            { id: 'thursday', label: 'Quinta' },
+            { id: 'friday', label: 'Sexta' },
+            { id: 'saturday', label: 'Sábado' },
+            { id: 'sunday', label: 'Domingo' }
+        ];
+
+        // --- SISTEMA DE ARMAZENAMENTO DE VÍDEOS OFFLINE (INDEXED DB) ---
+        const VideoDB = {
+            db: null,
+            init() {
+                return new Promise((resolve, reject) => {
+                    const request = indexedDB.open('IronRatsVideos', 1);
+                    request.onupgradeneeded = (e) => {
+                        e.target.result.createObjectStore('videos');
+                    };
+                    request.onsuccess = (e) => {
+                        this.db = e.target.result;
+                        resolve();
+                    };
+                    request.onerror = reject;
+                });
+            },
+            save(id, blob) {
+                return new Promise((resolve, reject) => {
+                    const tx = this.db.transaction('videos', 'readwrite');
+                    const store = tx.objectStore('videos');
+                    store.put(blob, id);
+                    tx.oncomplete = resolve;
+                    tx.onerror = reject;
+                });
+            },
+            get(id) {
+                return new Promise((resolve, reject) => {
+                    const tx = this.db.transaction('videos', 'readonly');
+                    const store = tx.objectStore('videos');
+                    const request = store.get(id);
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = reject;
+                });
+            },
+            delete(id) {
+                if(!this.db) return;
+                const tx = this.db.transaction('videos', 'readwrite');
+                tx.objectStore('videos').delete(id);
+            }
+        };
+
+        // --- ESTADO GLOBAL DA APLICAÇÃO ---
+        let state = {
+            db: null,
+            currentUser: null,
+            activeTab: 'workouts',
+            selectedDay: getInitialDay(),
+            isAddingExercise: false,
+            activeModal: null, // 'video', 'progress', null
+            modalData: null // Guarda ID do exercício ou URL do vídeo temporário
+        };
+
+        // --- FUNÇÕES UTILITÁRIAS ---
+        function getInitialDay() {
+            const today = new Date().toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+            const validDays = DAYS_OF_WEEK.map(d => d.id);
+            return validDays.includes(today) ? today : 'monday';
+        }
+
+        function getTodayStr() {
+            const d = new Date();
+            return new Date(d.getTime() - (d.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
+        }
+
+        function getYesterdayStr() {
+            const d = new Date();
+            d.setDate(d.getDate() - 1);
+            return new Date(d.getTime() - (d.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
+        }
+
+        // --- INICIALIZAÇÃO DO BANCO DE DADOS OFFLINE ---
+        function initDB() {
+            const stored = localStorage.getItem('gymRatsDB_v5');
+            if (stored) {
+                state.db = JSON.parse(stored);
+            } else {
+                state.db = { users: JSON.parse(JSON.stringify(DEFAULT_USERS)) };
+                saveDB();
+            }
+            render();
+        }
+
+        function saveDB() {
+            localStorage.setItem('gymRatsDB_v5', JSON.stringify(state.db));
+            if (state.currentUser) {
+                state.currentUser = state.db.users[state.currentUser.username];
+            }
+        }
+
+        // --- SISTEMA DE RENDERIZAÇÃO ---
+        function render() {
+            const appDiv = document.getElementById('app');
+            if (!state.currentUser) {
+                appDiv.innerHTML = renderLogin();
+            } else {
+                appDiv.innerHTML = renderAppLayout();
+            }
+        }
+
+        // --- TELAS E COMPONENTES ---
+
+        // TELA DE LOGIN
+        function renderLogin() {
+            return `
+                <div class="min-h-screen flex items-center justify-center p-4 relative overflow-hidden fade-in">
+                    <div class="absolute top-[-10%] left-[-10%] w-96 h-96 bg-emerald-600/20 rounded-full blur-3xl"></div>
+                    <div class="absolute bottom-[-10%] right-[-10%] w-96 h-96 bg-orange-600/20 rounded-full blur-3xl"></div>
+
+                    <div class="bg-gray-900/80 backdrop-blur-xl border border-gray-800 p-8 rounded-3xl w-full max-w-md z-10 shadow-2xl">
+                        <div class="flex justify-center mb-6">
+                            <div class="bg-emerald-500/10 p-4 rounded-full border border-emerald-500/20">
+                                <i class="fa-solid fa-dumbbell text-4xl text-emerald-400"></i>
+                            </div>
+                        </div>
+                        <h1 class="text-3xl font-bold text-center text-white mb-2">IronRats</h1>
+                        <p class="text-gray-400 text-center mb-8">Sua plataforma de evolução contínua.</p>
+
+                        <form id="loginForm" class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-400 mb-1">Usuário</label>
+                                <div class="relative">
+                                    <i class="fa-solid fa-user absolute left-4 top-1/2 -translate-y-1/2 text-gray-500"></i>
+                                    <input type="text" id="usernameInput" class="w-full bg-gray-950 border border-gray-800 rounded-xl py-3 pl-10 pr-4 text-white focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all" placeholder="Ex: allan" required>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-400 mb-1">Senha</label>
+                                <div class="relative">
+                                    <i class="fa-solid fa-lock absolute left-4 top-1/2 -translate-y-1/2 text-gray-500"></i>
+                                    <input type="password" id="passwordInput" class="w-full bg-gray-950 border border-gray-800 rounded-xl py-3 pl-10 pr-4 text-white focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all" placeholder="••••••" required>
+                                </div>
+                            </div>
+                            <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-emerald-600/20 mt-6">
+                                Entrar
+                            </button>
+                        </form>
+
+                        <div class="mt-8 p-4 bg-gray-950/50 rounded-xl border border-gray-800 text-sm text-gray-400">
+                            <p class="font-semibold text-gray-300 mb-2">Contas de teste criadas:</p>
+                            <ul class="space-y-1">
+                                <li>• <b>allan</b> (Senha: 123)</li>
+                                <li>• <b>rebeka</b> (Senha: 123)</li>
+                                <li>• <b>karol</b> (Senha: 123)</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // ESTRUTURA PRINCIPAL
+        function renderAppLayout() {
+            let tabContent = '';
+            if (state.activeTab === 'workouts') tabContent = renderWorkoutsTab();
+            if (state.activeTab === 'sugar') tabContent = renderSugarTab();
+            if (state.activeTab === 'leaderboard') tabContent = renderLeaderboardTab();
+
+            let modalContent = '';
+            if (state.activeModal === 'video') modalContent = renderVideoModal();
+            if (state.activeModal === 'progress') modalContent = renderProgressModal();
+
+            return `
+                <div class="max-w-5xl mx-auto md:py-8 flex flex-col md:flex-row gap-6 relative">
+                    ${renderSidebar()}
+                    <main class="flex-1 p-4 md:p-0 min-w-0">
+                        <!-- Motivação visível apenas no topo do Mobile -->
+                        <div class="md:hidden mb-6">
+                            ${renderMotivationArea()}
+                        </div>
+                        
+                        ${tabContent}
+                    </main>
+                    ${renderMobileNav()}
+                </div>
+                ${modalContent}
+            `;
+        }
+
+        function renderMotivationArea() {
+            // Puxa a imagem individual da conta de quem está logado
+            const u = state.currentUser;
+            const imgUrl = u.motivationImage || "https://images.unsplash.com/photo-1574626002010-86b2401f893e?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80";
+
+            return `
+                <div class="border border-gray-800 rounded-2xl overflow-hidden relative group bg-gray-950">
+                    <div class="p-2 text-center border-b border-gray-800 bg-gray-900/50">
+                        <p class="text-[10px] text-gray-400 font-bold uppercase tracking-widest flex items-center justify-center gap-2">
+                            <i class="fa-solid fa-skull text-gray-500"></i> Se faltar a academia, fica assim:
+                        </p>
+                    </div>
+                    <div class="bg-black w-full flex justify-center items-center">
+                        <img src="${imgUrl}" 
+                             alt="Motivação de ${u.name}" 
+                             class="w-full h-auto max-h-56 object-contain opacity-75 group-hover:opacity-100 transition-opacity">
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderSidebar() {
+            const u = state.currentUser;
+            return `
+                <aside class="hidden md:flex flex-col w-72 bg-gray-900 border border-gray-800 rounded-3xl p-6 h-[calc(100vh-4rem)] sticky top-8 overflow-y-auto scrollbar-hide">
+                    <div class="flex items-center gap-3 mb-8">
+                        <div class="bg-gradient-to-br from-emerald-400 to-emerald-600 p-2 rounded-xl text-white">
+                            <i class="fa-solid fa-dumbbell text-xl"></i>
+                        </div>
+                        <h2 class="text-xl font-bold text-white tracking-tight">IronRats</h2>
+                    </div>
+
+                    <div class="mb-6 p-4 bg-gray-950 rounded-2xl border border-gray-800 flex items-center gap-3">
+                        <div class="w-10 h-10 bg-gray-800 rounded-full flex items-center justify-center text-emerald-500 font-bold text-lg uppercase">
+                            ${u.name.charAt(0)}
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <p class="text-white font-medium truncate">${u.name}</p>
+                            <p class="text-xs text-emerald-500 flex items-center gap-1">
+                                <i class="fa-solid fa-fire"></i> ${u.sugarStreak} dias
+                            </p>
+                        </div>
+                    </div>
+
+                    <nav class="space-y-2 mb-8">
+                        <button onclick="setTab('workouts')" class="w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all ${state.activeTab === 'workouts' ? 'bg-emerald-600/10 text-emerald-400 border border-emerald-500/20' : 'text-gray-400 hover:bg-gray-800 hover:text-white'}">
+                            <i class="fa-solid fa-calendar-days w-5"></i> Meus Treinos
+                        </button>
+                        <button onclick="setTab('sugar')" class="w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all ${state.activeTab === 'sugar' ? 'bg-orange-600/10 text-orange-400 border border-orange-500/20' : 'text-gray-400 hover:bg-gray-800 hover:text-white'}">
+                            <i class="fa-solid fa-fire w-5"></i> Zero Açúcar
+                        </button>
+                        <button onclick="setTab('leaderboard')" class="w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all ${state.activeTab === 'leaderboard' ? 'bg-amber-600/10 text-amber-400 border border-amber-500/20' : 'text-gray-400 hover:bg-gray-800 hover:text-white'}">
+                            <i class="fa-solid fa-trophy w-5"></i> Competição
+                        </button>
+                    </nav>
+
+                    ${renderMotivationArea()}
+
+                    <button onclick="logout()" class="flex items-center gap-3 px-4 py-3 text-red-400 hover:bg-red-500/10 rounded-xl transition-all font-medium mt-auto w-full mt-6">
+                        <i class="fa-solid fa-arrow-right-from-bracket w-5"></i> Sair
+                    </button>
+                </aside>
+            `;
+        }
+
+        function renderMobileNav() {
+            return `
+                <div class="md:hidden fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 z-40 px-6 py-3 flex justify-between items-center pb-[env(safe-area-inset-bottom,1rem)]">
+                    <button onclick="setTab('workouts')" class="flex flex-col items-center p-2 transition-colors ${state.activeTab === 'workouts' ? 'text-emerald-400' : 'text-gray-500'}">
+                        <i class="fa-solid fa-calendar-days text-xl mb-1"></i>
+                        <span class="text-[10px] font-medium uppercase">Treinos</span>
+                    </button>
+                    <button onclick="setTab('sugar')" class="flex flex-col items-center p-2 transition-colors ${state.activeTab === 'sugar' ? 'text-orange-400' : 'text-gray-500'}">
+                        <i class="fa-solid fa-fire text-xl mb-1"></i>
+                        <span class="text-[10px] font-medium uppercase">Ofensiva</span>
+                    </button>
+                    <button onclick="setTab('leaderboard')" class="flex flex-col items-center p-2 transition-colors ${state.activeTab === 'leaderboard' ? 'text-amber-400' : 'text-gray-500'}">
+                        <i class="fa-solid fa-trophy text-xl mb-1"></i>
+                        <span class="text-[10px] font-medium uppercase">Ranking</span>
+                    </button>
+                </div>
+            `;
+        }
+
+        // ABA: TREINOS
+        function renderWorkoutsTab() {
+            const u = state.currentUser;
+            const currentWorkouts = u.workouts[state.selectedDay] || [];
+            const todayStr = getTodayStr();
+            
+            let progress = 0;
+            if (currentWorkouts.length > 0) {
+                // Checa a conclusão baseada na data atual para resetar toda semana
+                const completed = currentWorkouts.filter(e => e.completedDate === todayStr).length;
+                progress = Math.round((completed / currentWorkouts.length) * 100);
+            }
+
+            // Gera botões dos dias
+            const daysHtml = DAYS_OF_WEEK.map(day => `
+                <button onclick="setDay('${day.id}')" class="whitespace-nowrap px-5 py-2.5 rounded-full font-medium transition-all ${state.selectedDay === day.id ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30' : 'bg-gray-900 text-gray-400 hover:bg-gray-800 border border-gray-800'}">
+                    ${day.label}
+                </button>
+            `).join('');
+
+            // Gera lista de exercícios
+            let exercisesHtml = '';
+            if (currentWorkouts.length === 0) {
+                exercisesHtml = `
+                    <div class="text-center py-10">
+                        <div class="w-16 h-16 bg-gray-950 rounded-full flex items-center justify-center mx-auto mb-4 border border-gray-800 text-gray-600 text-2xl">
+                            <i class="fa-solid fa-dumbbell"></i>
+                        </div>
+                        <p class="text-gray-400 mb-4">Nenhum exercício planejado para hoje.</p>
+                    </div>
+                `;
+            } else {
+                exercisesHtml = '<div class="space-y-4 mb-8">';
+                currentWorkouts.forEach(exercise => {
+                    const isCompleted = exercise.completedDate === todayStr;
+                    exercisesHtml += `
+                        <div class="flex flex-col gap-3 p-4 rounded-2xl border transition-all ${isCompleted ? 'bg-emerald-900/10 border-emerald-500/30' : 'bg-gray-950 border-gray-800'}">
+                            
+                            <!-- Linha Principal -->
+                            <div class="flex items-start gap-4">
+                                <button onclick="toggleExercise('${exercise.id}')" class="mt-1 transition-transform active:scale-90">
+                                    ${isCompleted ? '<i class="fa-solid fa-circle-check text-2xl text-emerald-500"></i>' : '<div class="w-6 h-6 rounded-full border-2 border-gray-600 hover:border-emerald-500 transition-colors"></div>'}
+                                </button>
+                                <div class="flex-1">
+                                    <h4 class="font-bold text-lg ${isCompleted ? 'text-gray-400 line-through decoration-emerald-500/50' : 'text-white'}">${exercise.name}</h4>
+                                    <p class="text-gray-400 text-sm mt-1 flex gap-3">
+                                        <span><b class="text-gray-300">Séries:</b> ${exercise.sets || '-'}</span>
+                                        <span><b class="text-gray-300">Reps:</b> ${exercise.reps || '-'}</span>
+                                    </p>
+                                </div>
+                                <button onclick="removeExercise('${exercise.id}')" class="p-2 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors">
+                                    <i class="fa-solid fa-trash-can"></i>
+                                </button>
+                            </div>
+
+                            <!-- Botões Extras (Vídeo / Evolução) -->
+                            <div class="flex items-center gap-2 pl-10">
+                                ${exercise.videoId ? `
+                                    <button onclick="openVideo('${exercise.videoId}')" class="flex items-center gap-1.5 px-3 py-1.5 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 rounded-lg text-sm font-medium transition-colors">
+                                        <i class="fa-solid fa-play text-xs"></i> Vídeo Offline
+                                    </button>
+                                ` : ''}
+                                <button onclick="openProgress('${exercise.id}')" class="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 rounded-lg text-sm font-medium transition-colors">
+                                    <i class="fa-solid fa-arrow-trend-up text-xs"></i> Evolução
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                });
+                exercisesHtml += '</div>';
+            }
+
+            // Formulário de adição
+            let addFormHtml = '';
+            if (state.isAddingExercise) {
+                addFormHtml = `
+                    <form id="addExerciseForm" class="bg-gray-950 border border-gray-800 p-5 rounded-2xl space-y-4 fade-in">
+                        <div>
+                            <label class="text-xs text-gray-400 font-medium mb-1 block">Nome do Exercício *</label>
+                            <input type="text" id="exName" class="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-2 text-white focus:outline-none focus:border-emerald-500" placeholder="Ex: Supino Reto" required autofocus>
+                        </div>
+                        <div class="flex gap-4">
+                            <div class="flex-1">
+                                <label class="text-xs text-gray-400 font-medium mb-1 block">Séries</label>
+                                <input type="text" id="exSets" class="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-2 text-white focus:outline-none focus:border-emerald-500" placeholder="Ex: 4">
+                            </div>
+                            <div class="flex-1">
+                                <label class="text-xs text-gray-400 font-medium mb-1 block">Repetições</label>
+                                <input type="text" id="exReps" class="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-2 text-white focus:outline-none focus:border-emerald-500" placeholder="Ex: 10 a 12">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="text-xs text-emerald-400 font-bold mb-1 block">
+                                <i class="fa-solid fa-file-video"></i> Salvar Vídeo (Offline)
+                            </label>
+                            <input type="file" id="exVideoFile" accept="video/*" class="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-2 text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-emerald-500/10 file:text-emerald-400 hover:file:bg-emerald-500/20 cursor-pointer">
+                            <p class="text-[10px] text-gray-500 mt-1">O vídeo ficará salvo na memória do seu navegador para ver sem internet.</p>
+                        </div>
+                        <div class="flex gap-2 pt-2">
+                            <button type="submit" id="saveExBtn" class="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded-xl transition-colors">Salvar</button>
+                            <button type="button" onclick="toggleAddForm(false)" class="px-4 bg-gray-800 hover:bg-gray-700 text-white font-medium rounded-xl transition-colors">Cancelar</button>
+                        </div>
+                    </form>
+                `;
+            } else {
+                addFormHtml = `
+                    <button onclick="toggleAddForm(true)" class="w-full border-2 border-dashed border-gray-800 hover:border-emerald-500/50 hover:bg-emerald-500/5 text-gray-400 hover:text-emerald-400 rounded-2xl py-4 flex items-center justify-center gap-2 font-medium transition-all">
+                        <i class="fa-solid fa-plus"></i> Adicionar Exercício
+                    </button>
+                `;
+            }
+
+            const checkInBtn = currentWorkouts.length > 0 ? `
+                <button onclick="checkInWorkout()" class="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all">
+                    <i class="fa-solid fa-check"></i> Finalizar e Pontuar
+                </button>
+            ` : '';
+            
+            const mobileCheckInBtn = currentWorkouts.length > 0 ? `
+                <button onclick="checkInWorkout()" class="w-full mt-6 md:hidden bg-emerald-600 hover:bg-emerald-500 text-white py-4 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20">
+                    <i class="fa-solid fa-check-double"></i> Finalizar Treino e Pontuar
+                </button>
+            ` : '';
+
+            return `
+                <div class="space-y-6 fade-in">
+                    <header class="flex justify-between items-end md:hidden mt-4">
+                        <div>
+                            <h2 class="text-2xl font-bold text-white">Treinos</h2>
+                            <p class="text-gray-400 text-sm">Organize sua rotina</p>
+                        </div>
+                        <div class="w-10 h-10 bg-gray-800 rounded-full flex items-center justify-center text-emerald-500 font-bold border border-gray-700 uppercase">
+                            ${u.name.charAt(0)}
+                        </div>
+                    </header>
+
+                    <div class="flex gap-2 overflow-x-auto pb-2 scrollbar-hide -mx-4 px-4 md:mx-0 md:px-0">
+                        ${daysHtml}
+                    </div>
+
+                    <div class="bg-gray-900 border border-gray-800 rounded-3xl p-6 shadow-xl">
+                        <div class="flex justify-between items-center mb-6">
+                            <div>
+                                <h3 class="text-xl font-bold text-white flex items-center gap-2">
+                                    <i class="fa-solid fa-bolt text-emerald-500"></i>
+                                    Treino de ${DAYS_OF_WEEK.find(d => d.id === state.selectedDay).label}
+                                </h3>
+                                ${currentWorkouts.length > 0 ? `<p class="text-sm text-gray-400 mt-1">${progress}% Concluído hoje</p>` : ''}
+                            </div>
+                            <div class="hidden md:block">${checkInBtn}</div>
+                        </div>
+
+                        ${currentWorkouts.length > 0 ? `
+                            <div class="w-full bg-gray-950 rounded-full h-2 mb-8 overflow-hidden border border-gray-800">
+                                <div class="bg-gradient-to-r from-emerald-500 to-emerald-400 h-2 rounded-full transition-all duration-500" style="width: ${progress}%"></div>
+                            </div>
+                        ` : ''}
+
+                        ${exercisesHtml}
+                        ${addFormHtml}
+                        ${mobileCheckInBtn}
+                    </div>
+                </div>
+            `;
+        }
+
+        // ABA: ZERO AÇÚCAR
+        function renderSugarTab() {
+            const u = state.currentUser;
+            const todayStr = getTodayStr();
+            const yesterdayStr = getYesterdayStr();
+            const lastCheck = u.lastSugarCheckIn;
+            
+            let status = 'ready'; 
+            if (lastCheck === todayStr) status = 'done';
+            else if (lastCheck !== yesterdayStr && lastCheck !== '' && u.sugarStreak > 0) status = 'lost';
+
+            let actionHtml = '';
+            if (status === 'done') {
+                actionHtml = `
+                    <div class="text-emerald-400 font-medium flex flex-col items-center gap-2 fade-in">
+                        <i class="fa-solid fa-circle-check text-4xl mb-2"></i>
+                        <p>Check-in garantido hoje!<br/>Volte amanhã para manter o fogo aceso.</p>
+                    </div>
+                `;
+            } else if (status === 'ready') {
+                actionHtml = `
+                    <button onclick="checkInSugar('${status}')" class="w-full bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-400 hover:to-red-400 text-white font-bold py-4 rounded-2xl shadow-lg shadow-orange-500/25 transition-transform hover:scale-[1.02] active:scale-95 text-lg z-20 relative">
+                        Zero Açúcar Hoje! 🔥
+                    </button>
+                `;
+            } else if (status === 'lost') {
+                actionHtml = `
+                    <div class="w-full space-y-4 fade-in z-20 relative">
+                        <div class="bg-red-500/10 border border-red-500/20 p-4 rounded-xl text-red-400 text-sm flex items-start gap-3 text-left">
+                            <i class="fa-solid fa-triangle-exclamation text-xl mt-0.5"></i>
+                            <p>Você esqueceu o check-in ou comeu açúcar ontem. Sua ofensiva foi zerada.</p>
+                        </div>
+                        <button onclick="checkInSugar('${status}')" class="w-full bg-gray-800 hover:bg-gray-700 text-white font-bold py-4 rounded-2xl transition-colors text-lg">
+                            Recomeçar Ofensiva
+                        </button>
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="fade-in h-full flex flex-col justify-center py-10 md:py-0">
+                    <div class="bg-gray-900 border border-gray-800 rounded-3xl p-8 shadow-2xl relative overflow-hidden text-center max-w-lg mx-auto w-full">
+                        
+                        <!-- Efeitos de fundo -->
+                        <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-orange-500 via-red-500 to-amber-500"></div>
+                        <div class="absolute -top-24 -right-24 w-48 h-48 bg-orange-500/10 rounded-full blur-3xl z-0"></div>
+                        
+                        <div class="relative z-10">
+                            <h2 class="text-2xl font-bold text-white mb-2">Desafio Zero Açúcar</h2>
+                            <p class="text-gray-400 mb-6">Mantenha sua ofensiva longe dos doces.</p>
+
+                            <!-- Container do Foguinho corrigido -->
+                            <div class="relative inline-block mb-10 pt-4 pb-8">
+                                <div class="absolute inset-0 bg-orange-500/20 blur-2xl rounded-full ${status === 'done' ? 'pulse-slow' : ''} z-0"></div>
+                                <i class="fa-solid fa-fire text-8xl relative z-10 mx-auto ${u.sugarStreak > 0 && status !== 'lost' ? 'text-orange-500' : 'text-gray-700'}"></i>
+                                
+                                <div class="absolute -bottom-4 left-1/2 -translate-x-1/2 bg-gray-950 border border-gray-800 px-6 py-2 rounded-full shadow-xl whitespace-nowrap z-20">
+                                    <span class="text-3xl font-black text-white">${status === 'lost' ? 0 : u.sugarStreak}</span>
+                                    <span class="text-xs text-gray-400 ml-1 font-bold">DIAS</span>
+                                </div>
+                            </div>
+
+                            <div class="min-h-[100px] flex items-center justify-center mt-6">
+                                ${actionHtml}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // ABA: RANKING
+        function renderLeaderboardTab() {
+            const usersList = Object.values(state.db.users);
+            const sortByTreinos = [...usersList].sort((a, b) => b.workoutCheckIns - a.workoutCheckIns);
+            const sortBySugar = [...usersList].sort((a, b) => b.sugarStreak - a.sugarStreak);
+
+            const renderUserRow = (u, index, val, label, colorClass) => `
+                <div class="flex items-center gap-4 p-4 rounded-2xl border ${index === 0 ? `bg-${colorClass}-950/30 border-${colorClass}-500/30` : 'bg-gray-950 border-gray-800'}">
+                    <div class="font-black text-xl w-6 text-center ${index === 0 ? `text-${colorClass}-400` : 'text-gray-600'}">${index + 1}</div>
+                    <div class="w-10 h-10 bg-gray-800 rounded-full flex items-center justify-center text-white font-bold text-sm shrink-0 uppercase">${u.name.charAt(0)}</div>
+                    <div class="flex-1"><p class="font-bold text-white text-lg leading-tight">${u.name}</p></div>
+                    <div class="text-right">
+                        <p class="text-2xl font-black text-${colorClass}-500 leading-none">${val}</p>
+                        <p class="text-[10px] text-gray-400 font-bold tracking-wider mt-1">${label}</p>
+                    </div>
+                </div>
+            `;
+
+            return `
+                <div class="space-y-6 fade-in">
+                    <header class="mb-8 mt-4 md:mt-0">
+                        <h2 class="text-3xl font-bold text-white flex items-center gap-3">
+                            <i class="fa-solid fa-ranking-star text-amber-400 text-3xl"></i> Ranking Geral
+                        </h2>
+                        <p class="text-gray-400 mt-2">A competição amigável gera resultados extraordinários.</p>
+                    </header>
+
+                    <div class="grid md:grid-cols-2 gap-6">
+                        <div class="bg-gray-900 border border-gray-800 rounded-3xl p-6 shadow-xl relative overflow-hidden">
+                            <div class="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 rounded-bl-full"></div>
+                            <h3 class="text-xl font-bold text-white mb-6 flex items-center gap-2 relative z-10">
+                                <i class="fa-solid fa-dumbbell text-emerald-500"></i> Monstro dos Treinos
+                            </h3>
+                            <div class="space-y-3 relative z-10">
+                                ${sortByTreinos.map((u, i) => renderUserRow(u, i, u.workoutCheckIns, 'TREINOS', 'emerald')).join('')}
+                            </div>
+                        </div>
+
+                        <div class="bg-gray-900 border border-gray-800 rounded-3xl p-6 shadow-xl relative overflow-hidden">
+                            <div class="absolute top-0 right-0 w-32 h-32 bg-orange-500/5 rounded-bl-full"></div>
+                            <h3 class="text-xl font-bold text-white mb-6 flex items-center gap-2 relative z-10">
+                                <i class="fa-solid fa-fire text-orange-500"></i> Resiliência Pura
+                            </h3>
+                            <div class="space-y-3 relative z-10">
+                                ${sortBySugar.map((u, i) => renderUserRow(u, i, u.sugarStreak, 'DIAS INVICTO', 'orange')).join('')}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- MODAIS ---
+
+        // Modal de Vídeo Offline
+        function renderVideoModal() {
+            return `
+                <div class="fixed inset-0 z-50 flex items-center justify-center p-4 modal-overlay fade-in">
+                    <div class="bg-gray-900 border border-gray-800 rounded-3xl w-full max-w-lg overflow-hidden shadow-2xl">
+                        <div class="p-4 border-b border-gray-800 flex justify-between items-center">
+                            <h3 class="text-white font-bold"><i class="fa-solid fa-play text-blue-400 mr-2"></i> Execução (Offline)</h3>
+                            <button onclick="closeModal()" class="text-gray-400 hover:text-white transition-colors">
+                                <i class="fa-solid fa-xmark text-xl"></i>
+                            </button>
+                        </div>
+                        <div class="bg-black aspect-video flex items-center justify-center relative">
+                            <video id="offlinePlayer" controls class="w-full h-full object-contain" autoplay>
+                                <source src="${state.modalData}" type="video/mp4">
+                                Seu navegador não suporta vídeos.
+                            </video>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Modal de Progressão de Carga
+        function renderProgressModal() {
+            const list = state.db.users[state.currentUser.username].workouts[state.selectedDay];
+            const exercise = list.find(e => e.id === state.modalData);
+            if(!exercise) return '';
+
+            const historyHtml = (exercise.progressHistory || []).map((h, i) => `
+                <div class="flex justify-between items-center p-3 bg-gray-950 border border-gray-800 rounded-xl mb-2">
+                    <span class="text-sm text-gray-400 font-medium">Semana ${i + 1}</span>
+                    <div class="flex gap-4">
+                        <span class="text-white font-bold">${h.weight}</span>
+                        <span class="text-amber-400">${h.reps} reps</span>
+                    </div>
+                </div>
+            `).join('');
+
+            return `
+                <div class="fixed inset-0 z-50 flex items-center justify-center p-4 modal-overlay fade-in">
+                    <div class="bg-gray-900 border border-gray-800 rounded-3xl w-full max-w-md overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
+                        <div class="p-5 border-b border-gray-800 flex justify-between items-center bg-gray-900 sticky top-0">
+                            <div>
+                                <h3 class="text-white font-bold text-lg"><i class="fa-solid fa-arrow-trend-up text-amber-400 mr-2"></i> Evolução de Carga</h3>
+                                <p class="text-sm text-gray-400 mt-1">${exercise.name}</p>
+                            </div>
+                            <button onclick="closeModal()" class="text-gray-400 hover:text-white transition-colors h-8 w-8 flex items-center justify-center rounded-full hover:bg-gray-800">
+                                <i class="fa-solid fa-xmark text-xl"></i>
+                            </button>
+                        </div>
+                        
+                        <div class="p-5 overflow-y-auto flex-1">
+                            <h4 class="text-xs font-bold text-gray-500 uppercase tracking-widest mb-3">Histórico</h4>
+                            ${exercise.progressHistory && exercise.progressHistory.length > 0 
+                                ? historyHtml 
+                                : '<p class="text-sm text-gray-500 text-center py-6 border border-dashed border-gray-800 rounded-xl mb-2">Nenhum histórico registrado ainda.</p>'}
+                            
+                            <form id="progressForm" class="mt-6 bg-amber-500/5 border border-amber-500/20 p-4 rounded-xl">
+                                <h4 class="text-sm font-bold text-amber-400 mb-3">Registrar Nova Semana</h4>
+                                <div class="flex gap-3 mb-3">
+                                    <div class="flex-1">
+                                        <label class="text-[10px] text-gray-400 uppercase font-bold">Carga (ex: 12kg)</label>
+                                        <input type="text" id="progWeight" required class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500 mt-1" placeholder="12kg">
+                                    </div>
+                                    <div class="flex-1">
+                                        <label class="text-[10px] text-gray-400 uppercase font-bold">Repetições</label>
+                                        <input type="text" id="progReps" required class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500 mt-1" placeholder="8 a 10">
+                                    </div>
+                                </div>
+                                <button type="submit" class="w-full bg-amber-500 hover:bg-amber-400 text-gray-950 font-bold py-2 rounded-lg transition-colors text-sm">
+                                    <i class="fa-solid fa-plus mr-1"></i> Adicionar Registro
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+
+        // --- AÇÕES DO USUÁRIO ---
+        
+        document.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            if (e.target.id === 'loginForm') {
+                const user = document.getElementById('usernameInput').value.toLowerCase();
+                const pass = document.getElementById('passwordInput').value;
+                
+                const userData = state.db.users[user];
+                if (userData && userData.password === pass) {
+                    state.currentUser = userData;
+                    render();
+                } else {
+                    alert("Usuário ou senha incorretos!");
+                }
+            }
+            
+            if (e.target.id === 'addExerciseForm') {
+                const name = document.getElementById('exName').value;
+                const sets = document.getElementById('exSets').value;
+                const reps = document.getElementById('exReps').value;
+                const fileInput = document.getElementById('exVideoFile');
+                
+                let videoId = null;
+                const btn = document.getElementById('saveExBtn');
+                btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Salvando...';
+                btn.disabled = true;
+
+                // Processar salvamento do Vídeo Offline
+                if (fileInput.files.length > 0) {
+                    const file = fileInput.files[0];
+                    videoId = 'vid_' + Date.now();
+                    try {
+                        await VideoDB.save(videoId, file);
+                    } catch (err) {
+                        alert("Erro ao salvar vídeo offline. Verifique o espaço do dispositivo.");
+                    }
+                }
+                
+                const exercise = {
+                    id: Date.now().toString(),
+                    name, sets, reps, videoId: videoId, completedDate: null, progressHistory: []
+                };
+                
+                state.db.users[state.currentUser.username].workouts[state.selectedDay].push(exercise);
+                saveDB();
+                state.isAddingExercise = false;
+                render();
+            }
+
+            if (e.target.id === 'progressForm') {
+                const weight = document.getElementById('progWeight').value;
+                const reps = document.getElementById('progReps').value;
+                const dateStr = getTodayStr();
+
+                const list = state.db.users[state.currentUser.username].workouts[state.selectedDay];
+                const exercise = list.find(e => e.id === state.modalData);
+                
+                if(exercise) {
+                    if(!exercise.progressHistory) exercise.progressHistory = [];
+                    exercise.progressHistory.push({ date: dateStr, weight, reps });
+                    saveDB();
+                    render(); // Re-renderiza o modal para mostrar a nova linha
+                }
+            }
+        });
+
+        window.setTab = function(tab) {
+            state.activeTab = tab;
+            state.isAddingExercise = false;
+            render();
+        }
+
+        window.setDay = function(day) {
+            state.selectedDay = day;
+            state.isAddingExercise = false;
+            render();
+        }
+
+        window.logout = function() {
+            state.currentUser = null;
+            state.activeTab = 'workouts';
+            render();
+        }
+
+        window.toggleAddForm = function(show) {
+            state.isAddingExercise = show;
+            render();
+        }
+
+        window.toggleExercise = function(id) {
+            const list = state.db.users[state.currentUser.username].workouts[state.selectedDay];
+            const exercise = list.find(e => e.id === id);
+            if (exercise) {
+                const today = getTodayStr();
+                // Se já foi concluído HOJE, desmarca. Senão, marca com a data de HOJE.
+                // Isso faz resetar toda semana automaticamente!
+                exercise.completedDate = (exercise.completedDate === today) ? null : today;
+                saveDB();
+                render();
+            }
+        }
+
+        window.removeExercise = function(id) {
+            if(confirm('Tem certeza que deseja remover este exercício e seu vídeo?')) {
+                const uName = state.currentUser.username;
+                const list = state.db.users[uName].workouts[state.selectedDay];
+                const exercise = list.find(e => e.id === id);
+                
+                // Remove vídeo da memória
+                if(exercise && exercise.videoId) {
+                    VideoDB.delete(exercise.videoId);
+                }
+
+                state.db.users[uName].workouts[state.selectedDay] = list.filter(e => e.id !== id);
+                saveDB();
+                render();
+            }
+        }
+
+        window.checkInWorkout = function() {
+            state.db.users[state.currentUser.username].workoutCheckIns += 1;
+            saveDB();
+            alert('Treino registrado com sucesso! +1 pro ranking! 💪');
+            render();
+        }
+
+        window.checkInSugar = function(status) {
+            const u = state.db.users[state.currentUser.username];
+            if (status === 'lost') {
+                u.sugarStreak = 1;
+            } else if (status === 'ready') {
+                u.sugarStreak += 1;
+            }
+            u.lastSugarCheckIn = getTodayStr();
+            saveDB();
+            render();
+        }
+
+        // --- FUNÇÕES DE MODAL ---
+        
+        window.openProgress = function(exerciseId) {
+            state.activeModal = 'progress';
+            state.modalData = exerciseId;
+            render();
+        }
+
+        window.openVideo = async function(videoId) {
+            try {
+                const blob = await VideoDB.get(videoId);
+                if(blob) {
+                    const url = URL.createObjectURL(blob);
+                    state.activeModal = 'video';
+                    state.modalData = url;
+                    render();
+                } else {
+                    alert("Vídeo não encontrado. Talvez a memória do navegador tenha sido limpa.");
+                }
+            } catch(e) {
+                console.error(e);
+                alert("Erro ao carregar o vídeo offline.");
+            }
+        }
+
+        window.closeModal = function() {
+            if (state.activeModal === 'video' && state.modalData) {
+                // Limpa a URL temporária da memória
+                URL.revokeObjectURL(state.modalData);
+            }
+            state.activeModal = null;
+            state.modalData = null;
+            render();
+        }
+
+        // --- INICIALIZA A APLICAÇÃO ---
+        // Aguarda carregar o banco de vídeos, depois inicia o layout
+        VideoDB.init().then(() => {
+            initDB();
+        }).catch(err => {
+            console.error("Erro no IndexedDB", err);
+            initDB(); // Inicia mesmo se falhar (videos apenas não funcionarão)
+        });
+
+    </script>
+</body>
+</html>
