@@ -40,19 +40,41 @@
         
         .pulse-slow { animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
         
-        /* Modal Overlay */
         .modal-overlay { background-color: rgba(0, 0, 0, 0.85); backdrop-filter: blur(4px); }
     </style>
 </head>
 <body class="bg-gray-950 text-slate-200 font-sans antialiased selection:bg-emerald-500 selection:text-white">
 
-    <!-- Container Principal do App -->
-    <div id="app" class="min-h-screen pb-20 md:pb-0"></div>
+    <div id="app" class="min-h-screen pb-20 md:pb-0">
+        <!-- Tela de Carregamento Inicial -->
+        <div class="min-h-screen flex flex-col items-center justify-center p-4">
+            <i class="fa-solid fa-dumbbell text-emerald-500 text-5xl mb-4 animate-bounce"></i>
+            <p class="text-gray-400">Conectando ao seu Banco de Dados...</p>
+        </div>
+    </div>
 
-    <!-- Lógica JavaScript -->
-    <script>
-        // --- DADOS INICIAIS ZERADOS COM IMAGENS INDIVIDUAIS ---
-        // Você pode trocar os links das imagens abaixo pelas imagens que quiser!
+    <!-- Lógica JavaScript (TIPO MÓDULO PARA SUPORTAR NUVEM) -->
+    <script type="module">
+        // Importações do Firebase
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // =========================================================================
+        // SUAS CONFIGURAÇÕES DO FIREBASE (Já preenchidas)
+        // =========================================================================
+        const firebaseConfig = {
+            apiKey: "AIzaSyCMDQGfSF_YjPH6YcTgKOHTTLqXN0-JE8E",
+            authDomain: "ironrats-ffb34.firebaseapp.com",
+            projectId: "ironrats-ffb34",
+            storageBucket: "ironrats-ffb34.firebasestorage.app",
+            messagingSenderId: "933756182026",
+            appId: "1:933756182026:web:5c1ad25816663fdce089f3",
+            measurementId: "G-7KSPXGJR3J"
+        };
+        // =========================================================================
+
+        // --- DADOS INICIAIS ZERADOS COM IMAGENS INDIVIDUAIS LOCAIS ---
         const DEFAULT_USERS = {
             "allan": { 
                 username: "allan", password: "123", name: "Allan Lima", sugarStreak: 0, lastSugarCheckIn: "", workoutCheckIns: 0, 
@@ -87,32 +109,23 @@
             init() {
                 return new Promise((resolve, reject) => {
                     const request = indexedDB.open('IronRatsVideos', 1);
-                    request.onupgradeneeded = (e) => {
-                        e.target.result.createObjectStore('videos');
-                    };
-                    request.onsuccess = (e) => {
-                        this.db = e.target.result;
-                        resolve();
-                    };
+                    request.onupgradeneeded = (e) => { e.target.result.createObjectStore('videos'); };
+                    request.onsuccess = (e) => { this.db = e.target.result; resolve(); };
                     request.onerror = reject;
                 });
             },
             save(id, blob) {
                 return new Promise((resolve, reject) => {
                     const tx = this.db.transaction('videos', 'readwrite');
-                    const store = tx.objectStore('videos');
-                    store.put(blob, id);
-                    tx.oncomplete = resolve;
-                    tx.onerror = reject;
+                    tx.objectStore('videos').put(blob, id);
+                    tx.oncomplete = resolve; tx.onerror = reject;
                 });
             },
             get(id) {
                 return new Promise((resolve, reject) => {
                     const tx = this.db.transaction('videos', 'readonly');
-                    const store = tx.objectStore('videos');
-                    const request = store.get(id);
-                    request.onsuccess = () => resolve(request.result);
-                    request.onerror = reject;
+                    const request = tx.objectStore('videos').get(id);
+                    request.onsuccess = () => resolve(request.result); request.onerror = reject;
                 });
             },
             delete(id) {
@@ -129,9 +142,59 @@
             activeTab: 'workouts',
             selectedDay: getInitialDay(),
             isAddingExercise: false,
-            activeModal: null, // 'video', 'progress', null
-            modalData: null // Guarda ID do exercício ou URL do vídeo temporário
+            activeModal: null,
+            modalData: null 
         };
+
+        // --- CONEXÃO COM O SEU BANCO DE DADOS (FIREBASE) ---
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const dbFirestore = getFirestore(app);
+        let firebaseUser = null;
+
+        const initAuth = async () => {
+            try {
+                await signInAnonymously(auth);
+            } catch(e) { 
+                console.error("Erro na autenticação do Firebase:", e); 
+            }
+        };
+        initAuth();
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                firebaseUser = user;
+                startListeningCloud();
+            }
+        });
+
+        function startListeningCloud() {
+            if (firebaseUser) {
+                // Mudei para dados_gerais_v2 para forçar o sistema a puxar as novas imagens
+                const docRef = doc(dbFirestore, 'gymrats_app', 'dados_gerais_v2');
+                onSnapshot(docRef, (snapshot) => {
+                    if (snapshot.exists()) {
+                        state.db = snapshot.data();
+                        if (state.currentUser) state.currentUser = state.db.users[state.currentUser.username];
+                        render();
+                    } else {
+                        state.db = { users: JSON.parse(JSON.stringify(DEFAULT_USERS)) };
+                        setDoc(docRef, state.db).catch(console.error);
+                        render();
+                    }
+                }, (error) => { console.error("Erro na nuvem:", error); });
+            }
+        }
+
+        window.saveDB = async function() {
+            if (state.currentUser) state.currentUser = state.db.users[state.currentUser.username];
+            
+            if (firebaseUser) {
+                const docRef = doc(dbFirestore, 'gymrats_app', 'dados_gerais_v2');
+                render(); 
+                try { await setDoc(docRef, state.db); } catch(e) { console.error(e); }
+            }
+        }
 
         // --- FUNÇÕES UTILITÁRIAS ---
         function getInitialDay() {
@@ -151,25 +214,6 @@
             return new Date(d.getTime() - (d.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
         }
 
-        // --- INICIALIZAÇÃO DO BANCO DE DADOS OFFLINE ---
-        function initDB() {
-            const stored = localStorage.getItem('gymRatsDB_v5');
-            if (stored) {
-                state.db = JSON.parse(stored);
-            } else {
-                state.db = { users: JSON.parse(JSON.stringify(DEFAULT_USERS)) };
-                saveDB();
-            }
-            render();
-        }
-
-        function saveDB() {
-            localStorage.setItem('gymRatsDB_v5', JSON.stringify(state.db));
-            if (state.currentUser) {
-                state.currentUser = state.db.users[state.currentUser.username];
-            }
-        }
-
         // --- SISTEMA DE RENDERIZAÇÃO ---
         function render() {
             const appDiv = document.getElementById('app');
@@ -180,8 +224,6 @@
             }
         }
 
-        // --- TELAS E COMPONENTES ---
-
         // TELA DE LOGIN
         function renderLogin() {
             return `
@@ -191,12 +233,13 @@
 
                     <div class="bg-gray-900/80 backdrop-blur-xl border border-gray-800 p-8 rounded-3xl w-full max-w-md z-10 shadow-2xl">
                         <div class="flex justify-center mb-6">
-                            <div class="bg-emerald-500/10 p-4 rounded-full border border-emerald-500/20">
+                            <div class="bg-emerald-500/10 p-4 rounded-full border border-emerald-500/20 relative">
                                 <i class="fa-solid fa-dumbbell text-4xl text-emerald-400"></i>
+                                <div class="absolute -top-1 -right-1 bg-blue-500 rounded-full w-4 h-4 border-2 border-gray-900" title="Nuvem Ativa"></div>
                             </div>
                         </div>
                         <h1 class="text-3xl font-bold text-center text-white mb-2">IronRats</h1>
-                        <p class="text-gray-400 text-center mb-8">Sua plataforma de evolução contínua.</p>
+                        <p class="text-gray-400 text-center mb-8">🟢 Conectado na Nuvem</p>
 
                         <form id="loginForm" class="space-y-4">
                             <div>
@@ -219,11 +262,11 @@
                         </form>
 
                         <div class="mt-8 p-4 bg-gray-950/50 rounded-xl border border-gray-800 text-sm text-gray-400">
-                            <p class="font-semibold text-gray-300 mb-2">Contas de teste criadas:</p>
+                            <p class="font-semibold text-gray-300 mb-2">Contas cadastradas (Senha: 123):</p>
                             <ul class="space-y-1">
-                                <li>• <b>allan</b> (Senha: 123)</li>
-                                <li>• <b>rebeka</b> (Senha: 123)</li>
-                                <li>• <b>karol</b> (Senha: 123)</li>
+                                <li>• <b>allan</b> (Allan Lima)</li>
+                                <li>• <b>rebeka</b> (Rebeka Amaral)</li>
+                                <li>• <b>karol</b> (Karol Mirelli)</li>
                             </ul>
                         </div>
                     </div>
@@ -231,7 +274,6 @@
             `;
         }
 
-        // ESTRUTURA PRINCIPAL
         function renderAppLayout() {
             let tabContent = '';
             if (state.activeTab === 'workouts') tabContent = renderWorkoutsTab();
@@ -246,11 +288,7 @@
                 <div class="max-w-5xl mx-auto md:py-8 flex flex-col md:flex-row gap-6 relative">
                     ${renderSidebar()}
                     <main class="flex-1 p-4 md:p-0 min-w-0">
-                        <!-- Motivação visível apenas no topo do Mobile -->
-                        <div class="md:hidden mb-6">
-                            ${renderMotivationArea()}
-                        </div>
-                        
+                        <div class="md:hidden mb-6">${renderMotivationArea()}</div>
                         ${tabContent}
                     </main>
                     ${renderMobileNav()}
@@ -260,9 +298,8 @@
         }
 
         function renderMotivationArea() {
-            // Puxa a imagem individual da conta de quem está logado
             const u = state.currentUser;
-            const imgUrl = u.motivationImage || "https://images.unsplash.com/photo-1574626002010-86b2401f893e?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80";
+            const imgUrl = u.motivationImage || "img/Allan.jpg";
 
             return `
                 <div class="border border-gray-800 rounded-2xl overflow-hidden relative group bg-gray-950">
@@ -272,9 +309,7 @@
                         </p>
                     </div>
                     <div class="bg-black w-full flex justify-center items-center">
-                        <img src="${imgUrl}" 
-                             alt="Motivação de ${u.name}" 
-                             class="w-full h-auto max-h-56 object-contain opacity-75 group-hover:opacity-100 transition-opacity">
+                        <img src="${imgUrl}" alt="Motivação de ${u.name}" class="w-full h-auto max-h-56 object-contain opacity-75 group-hover:opacity-100 transition-opacity">
                     </div>
                 </div>
             `;
@@ -291,7 +326,8 @@
                         <h2 class="text-xl font-bold text-white tracking-tight">IronRats</h2>
                     </div>
 
-                    <div class="mb-6 p-4 bg-gray-950 rounded-2xl border border-gray-800 flex items-center gap-3">
+                    <div class="mb-6 p-4 bg-gray-950 rounded-2xl border border-gray-800 flex items-center gap-3 relative">
+                        <div class="absolute top-2 right-2 text-blue-500 text-xs flex items-center gap-1"><i class="fa-solid fa-cloud"></i></div>
                         <div class="w-10 h-10 bg-gray-800 rounded-full flex items-center justify-center text-emerald-500 font-bold text-lg uppercase">
                             ${u.name.charAt(0)}
                         </div>
@@ -343,7 +379,6 @@
             `;
         }
 
-        // ABA: TREINOS
         function renderWorkoutsTab() {
             const u = state.currentUser;
             const currentWorkouts = u.workouts[state.selectedDay] || [];
@@ -351,19 +386,16 @@
             
             let progress = 0;
             if (currentWorkouts.length > 0) {
-                // Checa a conclusão baseada na data atual para resetar toda semana
                 const completed = currentWorkouts.filter(e => e.completedDate === todayStr).length;
                 progress = Math.round((completed / currentWorkouts.length) * 100);
             }
 
-            // Gera botões dos dias
             const daysHtml = DAYS_OF_WEEK.map(day => `
                 <button onclick="setDay('${day.id}')" class="whitespace-nowrap px-5 py-2.5 rounded-full font-medium transition-all ${state.selectedDay === day.id ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30' : 'bg-gray-900 text-gray-400 hover:bg-gray-800 border border-gray-800'}">
                     ${day.label}
                 </button>
             `).join('');
 
-            // Gera lista de exercícios
             let exercisesHtml = '';
             if (currentWorkouts.length === 0) {
                 exercisesHtml = `
@@ -378,10 +410,10 @@
                 exercisesHtml = '<div class="space-y-4 mb-8">';
                 currentWorkouts.forEach(exercise => {
                     const isCompleted = exercise.completedDate === todayStr;
+                    const isCloudVideo = exercise.videoId && exercise.videoId.startsWith('http');
+
                     exercisesHtml += `
                         <div class="flex flex-col gap-3 p-4 rounded-2xl border transition-all ${isCompleted ? 'bg-emerald-900/10 border-emerald-500/30' : 'bg-gray-950 border-gray-800'}">
-                            
-                            <!-- Linha Principal -->
                             <div class="flex items-start gap-4">
                                 <button onclick="toggleExercise('${exercise.id}')" class="mt-1 transition-transform active:scale-90">
                                     ${isCompleted ? '<i class="fa-solid fa-circle-check text-2xl text-emerald-500"></i>' : '<div class="w-6 h-6 rounded-full border-2 border-gray-600 hover:border-emerald-500 transition-colors"></div>'}
@@ -398,11 +430,10 @@
                                 </button>
                             </div>
 
-                            <!-- Botões Extras (Vídeo / Evolução) -->
-                            <div class="flex items-center gap-2 pl-10">
+                            <div class="flex items-center gap-2 pl-10 flex-wrap">
                                 ${exercise.videoId ? `
                                     <button onclick="openVideo('${exercise.videoId}')" class="flex items-center gap-1.5 px-3 py-1.5 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 rounded-lg text-sm font-medium transition-colors">
-                                        <i class="fa-solid fa-play text-xs"></i> Vídeo Offline
+                                        <i class="fa-solid fa-play text-xs"></i> ${isCloudVideo ? 'Ver Vídeo (Nuvem)' : 'Ver Vídeo (Neste Aparelho)'}
                                     </button>
                                 ` : ''}
                                 <button onclick="openProgress('${exercise.id}')" class="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 rounded-lg text-sm font-medium transition-colors">
@@ -415,7 +446,6 @@
                 exercisesHtml += '</div>';
             }
 
-            // Formulário de adição
             let addFormHtml = '';
             if (state.isAddingExercise) {
                 addFormHtml = `
@@ -434,15 +464,23 @@
                                 <input type="text" id="exReps" class="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-2 text-white focus:outline-none focus:border-emerald-500" placeholder="Ex: 10 a 12">
                             </div>
                         </div>
-                        <div>
-                            <label class="text-xs text-emerald-400 font-bold mb-1 block">
-                                <i class="fa-solid fa-file-video"></i> Salvar Vídeo (Offline)
+                        
+                        <div class="p-3 bg-blue-500/5 border border-blue-500/20 rounded-xl">
+                            <label class="text-xs text-blue-400 font-bold mb-1 block">
+                                <i class="fa-solid fa-cloud"></i> Link do Vídeo (Recomendado - Sincroniza em todos celulares)
                             </label>
-                            <input type="file" id="exVideoFile" accept="video/*" class="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-2 text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-emerald-500/10 file:text-emerald-400 hover:file:bg-emerald-500/20 cursor-pointer">
-                            <p class="text-[10px] text-gray-500 mt-1">O vídeo ficará salvo na memória do seu navegador para ver sem internet.</p>
+                            <input type="url" id="exVideoUrl" class="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500 mt-1" placeholder="https://youtube.com/... ou insta">
+                            
+                            <div class="text-center text-gray-500 text-xs py-3 font-bold uppercase tracking-widest">OU</div>
+                            
+                            <label class="text-xs text-emerald-400 font-bold mb-1 block">
+                                <i class="fa-solid fa-hard-drive"></i> Subir Arquivo (Fica salvo apenas neste aparelho)
+                            </label>
+                            <input type="file" id="exVideoFile" accept="video/*" class="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-gray-400 file:mr-4 file:py-1 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-emerald-500/10 file:text-emerald-400 hover:file:bg-emerald-500/20 cursor-pointer mt-1">
                         </div>
+
                         <div class="flex gap-2 pt-2">
-                            <button type="submit" id="saveExBtn" class="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded-xl transition-colors">Salvar</button>
+                            <button type="submit" id="saveExBtn" class="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded-xl transition-colors">Salvar Exercicio</button>
                             <button type="button" onclick="toggleAddForm(false)" class="px-4 bg-gray-800 hover:bg-gray-700 text-white font-medium rounded-xl transition-colors">Cancelar</button>
                         </div>
                     </form>
@@ -509,7 +547,6 @@
             `;
         }
 
-        // ABA: ZERO AÇÚCAR
         function renderSugarTab() {
             const u = state.currentUser;
             const todayStr = getTodayStr();
@@ -551,8 +588,6 @@
             return `
                 <div class="fade-in h-full flex flex-col justify-center py-10 md:py-0">
                     <div class="bg-gray-900 border border-gray-800 rounded-3xl p-8 shadow-2xl relative overflow-hidden text-center max-w-lg mx-auto w-full">
-                        
-                        <!-- Efeitos de fundo -->
                         <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-orange-500 via-red-500 to-amber-500"></div>
                         <div class="absolute -top-24 -right-24 w-48 h-48 bg-orange-500/10 rounded-full blur-3xl z-0"></div>
                         
@@ -560,7 +595,6 @@
                             <h2 class="text-2xl font-bold text-white mb-2">Desafio Zero Açúcar</h2>
                             <p class="text-gray-400 mb-6">Mantenha sua ofensiva longe dos doces.</p>
 
-                            <!-- Container do Foguinho corrigido -->
                             <div class="relative inline-block mb-10 pt-4 pb-8">
                                 <div class="absolute inset-0 bg-orange-500/20 blur-2xl rounded-full ${status === 'done' ? 'pulse-slow' : ''} z-0"></div>
                                 <i class="fa-solid fa-fire text-8xl relative z-10 mx-auto ${u.sugarStreak > 0 && status !== 'lost' ? 'text-orange-500' : 'text-gray-700'}"></i>
@@ -580,7 +614,6 @@
             `;
         }
 
-        // ABA: RANKING
         function renderLeaderboardTab() {
             const usersList = Object.values(state.db.users);
             const sortByTreinos = [...usersList].sort((a, b) => b.workoutCheckIns - a.workoutCheckIns);
@@ -604,7 +637,7 @@
                         <h2 class="text-3xl font-bold text-white flex items-center gap-3">
                             <i class="fa-solid fa-ranking-star text-amber-400 text-3xl"></i> Ranking Geral
                         </h2>
-                        <p class="text-gray-400 mt-2">A competição amigável gera resultados extraordinários.</p>
+                        <p class="text-gray-400 mt-2">Nuvem Sincronizada em Tempo Real</p>
                     </header>
 
                     <div class="grid md:grid-cols-2 gap-6">
@@ -633,14 +666,12 @@
         }
 
         // --- MODAIS ---
-
-        // Modal de Vídeo Offline
         function renderVideoModal() {
             return `
                 <div class="fixed inset-0 z-50 flex items-center justify-center p-4 modal-overlay fade-in">
                     <div class="bg-gray-900 border border-gray-800 rounded-3xl w-full max-w-lg overflow-hidden shadow-2xl">
                         <div class="p-4 border-b border-gray-800 flex justify-between items-center">
-                            <h3 class="text-white font-bold"><i class="fa-solid fa-play text-blue-400 mr-2"></i> Execução (Offline)</h3>
+                            <h3 class="text-white font-bold"><i class="fa-solid fa-play text-blue-400 mr-2"></i> Execução Offline</h3>
                             <button onclick="closeModal()" class="text-gray-400 hover:text-white transition-colors">
                                 <i class="fa-solid fa-xmark text-xl"></i>
                             </button>
@@ -656,7 +687,6 @@
             `;
         }
 
-        // Modal de Progressão de Carga
         function renderProgressModal() {
             const list = state.db.users[state.currentUser.username].workouts[state.selectedDay];
             const exercise = list.find(e => e.id === state.modalData);
@@ -715,7 +745,6 @@
 
 
         // --- AÇÕES DO USUÁRIO ---
-        
         document.addEventListener('submit', async function(e) {
             e.preventDefault();
             
@@ -736,6 +765,8 @@
                 const name = document.getElementById('exName').value;
                 const sets = document.getElementById('exSets').value;
                 const reps = document.getElementById('exReps').value;
+                
+                const videoUrl = document.getElementById('exVideoUrl').value;
                 const fileInput = document.getElementById('exVideoFile');
                 
                 let videoId = null;
@@ -743,15 +774,13 @@
                 btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Salvando...';
                 btn.disabled = true;
 
-                // Processar salvamento do Vídeo Offline
-                if (fileInput.files.length > 0) {
+                if (videoUrl) {
+                    videoId = videoUrl; // Salva o link para sincronizar
+                } else if (fileInput.files.length > 0) {
                     const file = fileInput.files[0];
                     videoId = 'vid_' + Date.now();
-                    try {
-                        await VideoDB.save(videoId, file);
-                    } catch (err) {
-                        alert("Erro ao salvar vídeo offline. Verifique o espaço do dispositivo.");
-                    }
+                    try { await VideoDB.save(videoId, file); } 
+                    catch (err) { alert("Erro ao salvar vídeo offline. Verifique o espaço do dispositivo."); }
                 }
                 
                 const exercise = {
@@ -760,7 +789,7 @@
                 };
                 
                 state.db.users[state.currentUser.username].workouts[state.selectedDay].push(exercise);
-                saveDB();
+                window.saveDB(); // Salva na NUVEM
                 state.isAddingExercise = false;
                 render();
             }
@@ -776,8 +805,8 @@
                 if(exercise) {
                     if(!exercise.progressHistory) exercise.progressHistory = [];
                     exercise.progressHistory.push({ date: dateStr, weight, reps });
-                    saveDB();
-                    render(); // Re-renderiza o modal para mostrar a nova linha
+                    window.saveDB(); // Salva na NUVEM
+                    render(); 
                 }
             }
         });
@@ -810,10 +839,8 @@
             const exercise = list.find(e => e.id === id);
             if (exercise) {
                 const today = getTodayStr();
-                // Se já foi concluído HOJE, desmarca. Senão, marca com a data de HOJE.
-                // Isso faz resetar toda semana automaticamente!
                 exercise.completedDate = (exercise.completedDate === today) ? null : today;
-                saveDB();
+                window.saveDB(); // Salva na NUVEM
                 render();
             }
         }
@@ -824,21 +851,20 @@
                 const list = state.db.users[uName].workouts[state.selectedDay];
                 const exercise = list.find(e => e.id === id);
                 
-                // Remove vídeo da memória
-                if(exercise && exercise.videoId) {
+                if(exercise && exercise.videoId && !exercise.videoId.startsWith('http')) {
                     VideoDB.delete(exercise.videoId);
                 }
 
                 state.db.users[uName].workouts[state.selectedDay] = list.filter(e => e.id !== id);
-                saveDB();
+                window.saveDB(); // Salva na NUVEM
                 render();
             }
         }
 
         window.checkInWorkout = function() {
             state.db.users[state.currentUser.username].workoutCheckIns += 1;
-            saveDB();
-            alert('Treino registrado com sucesso! +1 pro ranking! 💪');
+            window.saveDB(); // Salva na NUVEM
+            alert('Treino registrado com sucesso na Nuvem! +1 pro ranking! 💪');
             render();
         }
 
@@ -850,12 +876,10 @@
                 u.sugarStreak += 1;
             }
             u.lastSugarCheckIn = getTodayStr();
-            saveDB();
+            window.saveDB(); // Salva na NUVEM
             render();
         }
 
-        // --- FUNÇÕES DE MODAL ---
-        
         window.openProgress = function(exerciseId) {
             state.activeModal = 'progress';
             state.modalData = exerciseId;
@@ -863,6 +887,10 @@
         }
 
         window.openVideo = async function(videoId) {
+            if (videoId.startsWith('http')) {
+                window.open(videoId, '_blank');
+                return;
+            }
             try {
                 const blob = await VideoDB.get(videoId);
                 if(blob) {
@@ -871,17 +899,15 @@
                     state.modalData = url;
                     render();
                 } else {
-                    alert("Vídeo não encontrado. Talvez a memória do navegador tenha sido limpa.");
+                    alert("Vídeo offline não encontrado neste aparelho.");
                 }
             } catch(e) {
-                console.error(e);
                 alert("Erro ao carregar o vídeo offline.");
             }
         }
 
         window.closeModal = function() {
             if (state.activeModal === 'video' && state.modalData) {
-                // Limpa a URL temporária da memória
                 URL.revokeObjectURL(state.modalData);
             }
             state.activeModal = null;
@@ -889,14 +915,8 @@
             render();
         }
 
-        // --- INICIALIZA A APLICAÇÃO ---
-        // Aguarda carregar o banco de vídeos, depois inicia o layout
-        VideoDB.init().then(() => {
-            initDB();
-        }).catch(err => {
-            console.error("Erro no IndexedDB", err);
-            initDB(); // Inicia mesmo se falhar (videos apenas não funcionarão)
-        });
+        // --- INICIA BANCO DE VIDEOS OFFLINE ---
+        VideoDB.init().catch(err => console.error("Erro VideoDB", err));
 
     </script>
 </body>
